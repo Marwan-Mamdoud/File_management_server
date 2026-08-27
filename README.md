@@ -13,6 +13,24 @@ JWT auth with email-verification OTPs · File uploads with automatic content ext
 
 </div>
 
+## Demo Credentials
+
+The following accounts are available for testing the application:
+
+### Admin Account
+
+- **Email:** admin@example.com
+- **Password:** Admin123
+
+### User Account
+
+- **Email:** marwanmamdouh159@gmail.com
+- **Password:** Marwan123
+
+The Admin account provides access to the admin dashboard, user management, and file management features.
+
+The User account provides access to the standard file management features.
+
 ---
 
 ## Quick Links
