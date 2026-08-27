@@ -1,0 +1,1621 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "File Management System API",
+    "description": "Backend for a complete file management system: JWT auth with email-verification OTPs, file uploads with content extraction (PDF/DOCX/XLSX/CSV/text/images) and Cloudinary storage, per-user dashboards, admin statistics, and admin user management.\n\nAll authenticated endpoints expect `Authorization: Bearer <accessToken>`. The token payload carries `{ userId, role }` only.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://localhost:8080", "description": "Local development" },
+    { "url": "https://your-project.vercel.app", "description": "Vercel deployment (replace with your domain)" }
+  ],
+    "tags": [
+    { "name": "System", "description": "Service health" },
+    { "name": "Auth", "description": "Registration, OTP verification, login, password lifecycle, profile" },
+    { "name": "Files", "description": "Upload (multipart), list/search/filter/sort/paginate, detail, rename, delete" },
+    { "name": "Files (Admin)", "description": "Admin-only: list all files with owner data, manage any file" },
+    { "name": "Stats", "description": "Read-only dashboards computed on demand" },
+    { "name": "Users", "description": "Admin-only user management" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Health check",
+        "description": "Liveness probe. No authentication required.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthStatus" },
+                "example": { "status": "ok" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Register a new account",
+        "description": "Creates an unverified user, hashes the password (bcrypt), then emails a 6-digit verification code (valid 10 minutes). Duplicate emails return 409.",
+        "operationId": "register",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterInput" },
+              "example": { "name": "Jane Tester", "email": "jane@example.com", "password": "Passw0rd!23" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created; verification code sent by email",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RegisterResponse" },
+                "example": {
+                  "message": "Account created. A verification code has been sent to your email.",
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": false,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:31:18.633Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "CONFLICT", "message": "Email is already registered" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/verify-email": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Verify email with OTP",
+        "description": "Consumes the newest active EMAIL_VERIFY code for the account and flips `isVerified` to true. Codes expire after 10 minutes; resending invalidates previous codes.",
+        "operationId": "verifyEmail",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VerifyEmailInput" },
+              "example": { "email": "jane@example.com", "code": "482913" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email verified",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthUserResponse" },
+                "example": {
+                  "message": "Email verified successfully",
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": true,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:31:27.070Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, expired, or already-consumed code",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "VALIDATION_ERROR", "message": "Invalid or expired verification code" } }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already verified",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "CONFLICT", "message": "Email is already verified" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/resend-code": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Resend verification code",
+        "description": "Invalidates any previous unconsumed EMAIL_VERIFY codes, issues a fresh one, and emails it. Response is generic on purpose (anti-enumeration): identical whether or not the account exists or is already verified.",
+        "operationId": "resendVerificationCode",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EmailInput" },
+              "example": { "email": "jane@example.com" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted — generic response regardless of account state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageOnly" },
+                "example": { "message": "If that email belongs to an unverified account, a new code has been sent." }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Log in",
+        "description": "Returns a signed JWT (`{ userId, role }` payload) plus the public user object. Unverified accounts are rejected until they verify their email.",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginInput" },
+              "example": { "email": "jane@example.com", "password": "Passw0rd!23" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" },
+                "example": {
+                  "message": "Logged in successfully",
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": true,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:31:27.070Z"
+                  },
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI5YjhjMWJlMi0wN2JhLTQwNzUtOGMwNy04MmU0OWFjNTA1ZWEiLCJyb2xlIjoiVVNFUiIsImlhdCI6MTc4NzYxMDY5MywiZXhwIjoxNzg3Njk3MDkzfQ.i3GeNUFx7a28GQD1R5B-uot4TIixnW2lrUXryIdzMxQ"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": {
+            "description": "Wrong email or password",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "UNAUTHORIZED", "message": "Invalid email or password" } }
+              }
+            }
+          },
+          "403": {
+            "description": "Account not verified yet",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "FORBIDDEN", "message": "Please verify your email before logging in" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Request a password reset code",
+        "description": "Issues a PASSWORD_RESET OTP (10-minute validity) if the account exists. Response is generic always (anti-enumeration).",
+        "operationId": "forgotPassword",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EmailInput" },
+              "example": { "email": "jane@example.com" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generic success regardless of account existence",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageOnly" },
+                "example": { "message": "If that email exists, a password reset code has been sent." }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/reset-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Reset password with OTP",
+        "description": "Verifies and consumes the newest PASSWORD_RESET code, then replaces the password. For unknown emails the error is identical to a bad code (anti-enumeration).",
+        "operationId": "resetPassword",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ResetPasswordInput" },
+              "example": { "email": "jane@example.com", "code": "731904", "newPassword": "N3wPass!456" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthUserResponse" },
+                "example": {
+                  "message": "Password reset successfully",
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": true,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:31:48.633Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/expired code or unknown email (indistinguishable)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "VALIDATION_ERROR", "message": "Invalid or expired verification code" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/change-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Change own password",
+        "description": "Authenticated. Verifies the current password before applying the new one.",
+        "operationId": "changePassword",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChangePasswordInput" },
+              "example": { "currentPassword": "N3wPass!456", "newPassword": "Ch4nged!789" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password changed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthUserResponse" },
+                "example": {
+                  "message": "Password changed successfully",
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": true,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:32:12.340Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": {
+            "description": "Missing/invalid token, or current password incorrect",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "examples": {
+                  "wrongCurrent": { "value": { "error": { "code": "UNAUTHORIZED", "message": "Current password is incorrect" } } },
+                  "noToken": { "value": { "error": { "code": "UNAUTHORIZED", "message": "Authentication required" } } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/profile": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get own profile",
+        "description": "Authenticated. Returns the caller's public user object (password never included anywhere in this API).",
+        "operationId": "getProfile",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Current user",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserResponse" },
+                "example": {
+                  "user": {
+                    "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "name": "Jane Tester",
+                    "email": "jane@example.com",
+                    "role": "USER",
+                    "isVerified": true,
+                    "createdAt": "2026-08-24T22:31:18.633Z",
+                    "updatedAt": "2026-08-24T22:31:48.633Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "Token references a deleted user",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "NOT_FOUND", "message": "User not found" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/upload": {
+      "post": {
+        "tags": ["Files"],
+        "summary": "Upload files (batch)",
+        "description": "Authenticated multipart upload, field name `files` (up to 10 files; the WHOLE batch must total ≤4MB). Pipeline per file: memoryStorage (never disk) → backend derives the real MIME type from magic bytes (client-declared type is only a hint for undetectable text formats) → allow-list check → content extraction ∥ Cloudinary upload in parallel → File row persisted.\n\nAllowed types: PDF, DOCX, XLS/XLSX, CSV, TXT, JPEG/PNG/WEBP/GIF. Every file is processed independently — one failure never blocks the rest. Extraction failures still persist that row as `extractionStatus: FAILED` while the upload itself succeeds.\n\nStatus codes: `201` all uploaded · `207` partial success (mixed results) · `400` nothing persisted due to client errors · `502` nothing persisted due to storage failure.",
+        "operationId": "uploadFiles",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["files"],
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": { "type": "string", "format": "binary" },
+                    "description": "Files to upload (batch total ≤4MB, allowed types listed above)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "All files uploaded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadBatchResponse" },
+                "example": {
+                  "message": "All 2 file(s) uploaded successfully",
+                  "summary": { "total": 2, "uploaded": 2, "failed": 0 },
+                  "results": [
+                    {
+                      "filename": "quarterly-report.pdf",
+                      "success": true,
+                      "file": {
+                        "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                        "filename": "quarterly-report.pdf",
+                        "mimeType": "application/pdf",
+                        "size": 48213,
+                        "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                        "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                        "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                        "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                        "extractionStatus": "COMPLETED",
+                        "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                        "createdAt": "2026-08-25T09:12:45.120Z",
+                        "updatedAt": "2026-08-25T09:12:47.881Z"
+                      }
+                    },
+                    {
+                      "filename": "notes.txt",
+                      "success": true,
+                      "file": {
+                        "id": "a41d9f60-2c85-47ab-b3f2-7d90cc31ee04",
+                        "filename": "notes.txt",
+                        "mimeType": "text/plain",
+                        "size": 29,
+                        "url": "https://res.cloudinary.com/demo/raw/upload/v1787612346/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/mxktrwqylp8vbn2ecjha.txt",
+                        "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/mxktrwqylp8vbn2ecjha",
+                        "extractedContent": "Meeting notes from Tuesday...",
+                        "extractedMetadata": { "charCount": 29, "lineCount": 1, "mimeDetectionMethod": "text-sniffing" },
+                        "extractionStatus": "COMPLETED",
+                        "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                        "createdAt": "2026-08-25T09:12:46.010Z",
+                        "updatedAt": "2026-08-25T09:12:47.120Z"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "207": {
+            "description": "Partial success — some files uploaded, some failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadBatchResponse" },
+                "example": {
+                  "message": "Uploaded 2 of 3 files",
+                  "summary": { "total": 3, "uploaded": 2, "failed": 1 },
+                  "results": [
+                    {
+                      "filename": "quarterly-report.pdf",
+                      "success": true,
+                      "file": { "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1", "filename": "quarterly-report.pdf", "mimeType": "application/pdf", "size": 48213, "extractionStatus": "COMPLETED" }
+                    },
+                    {
+                      "filename": "archive.zip",
+                      "success": false,
+                      "error": { "code": "VALIDATION_ERROR", "message": "File type not allowed" }
+                    },
+                    {
+                      "filename": "broken.docx",
+                      "success": false,
+                      "error": { "code": "INTERNAL_SERVER_ERROR", "message": "Something went wrong" }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Nothing persisted — empty request or batch total exceeds 4MB",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "examples": {
+                  "emptyRequest": { "value": { "error": { "code": "VALIDATION_ERROR", "message": "At least one file is required (multipart field \"files\")" } } },
+                  "totalTooLarge": { "value": { "error": { "code": "VALIDATION_ERROR", "message": "Total size of all uploaded files exceeds the maximum allowed request size" } } },
+                  "allDisallowed": { "value": { "error": { "code": "VALIDATION_ERROR", "message": "File type not allowed" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": {
+            "description": "Cloudinary upload failed for every file",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "UPLOAD_FAILED", "message": "Cloud storage upload failed" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files": {
+      "get": {
+        "tags": ["Files"],
+        "summary": "List own files (search / filter / sort / paginate)",
+        "description": "Authenticated. Returns only the caller's own uploads.\n\n`type` accepts an exact MIME (`application/pdf`) or a family (`image`, `image/*`). `sortBy` whitelist: createdAt, updatedAt, size, filename, mimeType.",
+        "operationId": "listFiles",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 }, "example": 1 },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }, "example": 10 },
+          { "name": "search", "in": "query", "schema": { "type": "string", "minLength": 1, "maxLength": 255 }, "description": "Case-insensitive substring match on filename", "example": "report" },
+          { "name": "type", "in": "query", "schema": { "type": "string", "minLength": 1, "maxLength": 100 }, "description": "Exact mime or family prefix", "example": "image/*" },
+          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt >= from", "example": "2026-08-01T00:00:00.000Z" },
+          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt <= to", "example": "2026-08-31T23:59:59.000Z" },
+          { "name": "minSize", "in": "query", "schema": { "type": "integer", "minimum": 0 }, "description": "size >= minSize (bytes)", "example": 1024 },
+          { "name": "maxSize", "in": "query", "schema": { "type": "integer", "minimum": 0 }, "description": "size <= maxSize (bytes)", "example": 10485760 },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["createdAt", "updatedAt", "size", "filename", "mimeType"], "default": "createdAt" },
+            "example": "createdAt"
+          },
+          { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" }, "example": "desc" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated file list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileListResult" },
+                "example": {
+                  "data": [
+                    {
+                      "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                      "filename": "quarterly-report.pdf",
+                      "mimeType": "application/pdf",
+                      "size": 48213,
+                      "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                      "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                      "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                      "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                      "extractionStatus": "COMPLETED",
+                      "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                      "createdAt": "2026-08-25T09:12:45.120Z",
+                      "updatedAt": "2026-08-25T09:12:47.881Z"
+                    }
+                  ],
+                  "pagination": { "page": 1, "limit": 10, "total": 1, "totalPages": 1 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameter (unknown sortBy, limit > 100, inverted ranges, …)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": {
+                  "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid request payload",
+                    "details": [{ "path": "sortBy", "message": "Invalid enum value. Expected 'createdAt' | 'updatedAt' | 'size' | 'filename' | 'mimeType'" }]
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/files/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "example": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1" }
+      ],
+      "get": {
+        "tags": ["Files"],
+        "summary": "Get file detail",
+        "description": "Owner or admin. Non-owners receive an indistinguishable 404.",
+        "operationId": "getFileById",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "File detail incl. extracted content",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileResponse" },
+                "example": {
+                  "file": {
+                    "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                    "filename": "quarterly-report.pdf",
+                    "mimeType": "application/pdf",
+                    "size": 48213,
+                    "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                    "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                    "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                    "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                    "extractionStatus": "COMPLETED",
+                    "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "createdAt": "2026-08-25T09:12:45.120Z",
+                    "updatedAt": "2026-08-25T09:12:47.881Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Files"],
+        "summary": "Rename a file",
+        "description": "Owner or admin. Filename is trimmed/sanitized like at upload time.",
+        "operationId": "renameFile",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RenameInput" },
+              "example": { "filename": "quarterly-report-final.pdf" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileMutationResponse" },
+                "example": {
+                  "message": "File renamed successfully",
+                  "file": {
+                    "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                    "filename": "quarterly-report-final.pdf",
+                    "mimeType": "application/pdf",
+                    "size": 48213,
+                    "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                    "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                    "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                    "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                    "extractionStatus": "COMPLETED",
+                    "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "createdAt": "2026-08-25T09:12:45.120Z",
+                    "updatedAt": "2026-08-25T09:14:02.553Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Files"],
+        "summary": "Delete a file",
+        "description": "Owner or admin. Removes the DB row and best-effort destroys the Cloudinary asset (image vs raw type-aware). Storage hiccups never fail an already-committed deletion.",
+        "operationId": "deleteFile",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageOnly" },
+                "example": { "message": "File deleted successfully" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      }
+    },
+    "/files/admin/all": {
+      "get": {
+        "tags": ["Files (Admin)"],
+        "summary": "List all files (admin)",
+        "description": "Admin only. Every row includes the `uploadedBy` owner object. Optional `userId` filter narrows to one user's files. Supports the same pagination, search, filter, and sort parameters as the regular file list.",
+        "operationId": "adminListAllFiles",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 }, "example": 1 },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }, "example": 10 },
+          { "name": "search", "in": "query", "schema": { "type": "string", "minLength": 1, "maxLength": 255 }, "description": "Case-insensitive substring match on filename", "example": "report" },
+          { "name": "type", "in": "query", "schema": { "type": "string", "minLength": 1, "maxLength": 100 }, "description": "Exact mime or family prefix", "example": "image/*" },
+          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt >= from", "example": "2026-08-01T00:00:00.000Z" },
+          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt <= to", "example": "2026-08-31T23:59:59.000Z" },
+          { "name": "minSize", "in": "query", "schema": { "type": "integer", "minimum": 0 }, "description": "size >= minSize (bytes)", "example": 1024 },
+          { "name": "maxSize", "in": "query", "schema": { "type": "integer", "minimum": 0 }, "description": "size <= maxSize (bytes)", "example": 10485760 },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["createdAt", "updatedAt", "size", "filename", "mimeType"], "default": "createdAt" },
+            "example": "createdAt"
+          },
+          { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" }, "example": "desc" },
+          { "name": "userId", "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Filter by owner id", "example": "9b8c1be2-07ba-4075-8c07-82e49ac505ea" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated file list with owner data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileListResult" },
+                "example": {
+                  "data": [
+                    {
+                      "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                      "filename": "quarterly-report.pdf",
+                      "mimeType": "application/pdf",
+                      "size": 48213,
+                      "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                      "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                      "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                      "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                      "extractionStatus": "COMPLETED",
+                      "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                      "uploadedBy": {
+                        "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                        "name": "Jane Tester",
+                        "email": "jane@example.com",
+                        "role": "USER",
+                        "isVerified": true,
+                        "createdAt": "2026-08-24T22:31:18.633Z",
+                        "updatedAt": "2026-08-24T22:31:18.633Z"
+                      },
+                      "createdAt": "2026-08-25T09:12:45.120Z",
+                      "updatedAt": "2026-08-25T09:12:47.881Z"
+                    }
+                  ],
+                  "pagination": { "page": 1, "limit": 10, "total": 1, "totalPages": 1 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameter",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": {
+                  "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid request payload",
+                    "details": [{ "path": "sortBy", "message": "Invalid enum value. Expected 'createdAt' | 'updatedAt' | 'size' | 'filename' | 'mimeType'" }]
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/files/admin/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "example": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1" }
+      ],
+      "get": {
+        "tags": ["Files (Admin)"],
+        "summary": "Get any file detail (admin)",
+        "description": "Admin only. Returns any file by ID regardless of ownership.",
+        "operationId": "adminGetFileById",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "File detail with owner data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileResponse" },
+                "example": {
+                  "file": {
+                    "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                    "filename": "quarterly-report.pdf",
+                    "mimeType": "application/pdf",
+                    "size": 48213,
+                    "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                    "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                    "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                    "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                    "extractionStatus": "COMPLETED",
+                    "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "uploadedBy": {
+                      "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                      "name": "Jane Tester",
+                      "email": "jane@example.com",
+                      "role": "USER",
+                      "isVerified": true,
+                      "createdAt": "2026-08-24T22:31:18.633Z",
+                      "updatedAt": "2026-08-24T22:31:18.633Z"
+                    },
+                    "createdAt": "2026-08-25T09:12:45.120Z",
+                    "updatedAt": "2026-08-25T09:12:47.881Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Files (Admin)"],
+        "summary": "Rename any file (admin)",
+        "description": "Admin only. Renames any file regardless of ownership.",
+        "operationId": "adminRenameFile",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RenameInput" },
+              "example": { "filename": "quarterly-report-final.pdf" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileMutationResponse" },
+                "example": {
+                  "message": "File renamed successfully",
+                  "file": {
+                    "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                    "filename": "quarterly-report-final.pdf",
+                    "mimeType": "application/pdf",
+                    "size": 48213,
+                    "url": "https://res.cloudinary.com/demo/raw/upload/v1787612345/file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo.pdf",
+                    "storageKey": "file-management/9b8c1be2-07ba-4075-8c07-82e49ac505ea/kqzvbmwpzr5fsk1hjdxo",
+                    "extractedContent": "Quarterly revenue grew 12% across all regions...",
+                    "extractedMetadata": { "pageCount": 4, "mimeDetectionMethod": "magic-bytes" },
+                    "extractionStatus": "COMPLETED",
+                    "uploadedById": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                    "uploadedBy": {
+                      "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                      "name": "Jane Tester",
+                      "email": "jane@example.com",
+                      "role": "USER",
+                      "isVerified": true,
+                      "createdAt": "2026-08-24T22:31:18.633Z",
+                      "updatedAt": "2026-08-24T22:31:18.633Z"
+                    },
+                    "createdAt": "2026-08-25T09:12:45.120Z",
+                    "updatedAt": "2026-08-25T09:14:02.553Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Files (Admin)"],
+        "summary": "Delete any file (admin)",
+        "description": "Admin only. Deletes any file regardless of ownership. Removes the DB row and best-effort destroys the Cloudinary asset.",
+        "operationId": "adminDeleteFile",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageOnly" },
+                "example": { "message": "File deleted successfully" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/FileNotFound" }
+        }
+      }
+    },
+    "/stats/user": {
+      "get": {
+        "tags": ["Stats"],
+        "summary": "Own dashboard statistics",
+        "description": "Authenticated. Totals + per-MIME breakdown + daily upload history over the last 14 days (UTC days, zero-filled for continuous charts). Computed on demand — no caching layer.",
+        "operationId": "getUserStats",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Aggregates for the caller's own files",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserStats" },
+                "example": {
+                  "totals": { "files": 6, "storageBytes": 6600 },
+                  "fileTypes": [
+                    { "mimeType": "text/plain", "count": 3, "storageBytes": 600 },
+                    { "mimeType": "image/png", "count": 2, "storageBytes": 2000 },
+                    { "mimeType": "application/pdf", "count": 1, "storageBytes": 4000 }
+                  ],
+                  "uploadHistory": [
+                    { "date": "2026-08-12", "count": 0 },
+                    { "date": "2026-08-13", "count": 0 },
+                    { "date": "2026-08-14", "count": 0 },
+                    { "date": "2026-08-15", "count": 0 },
+                    { "date": "2026-08-16", "count": 0 },
+                    { "date": "2026-08-17", "count": 0 },
+                    { "date": "2026-08-18", "count": 0 },
+                    { "date": "2026-08-19", "count": 0 },
+                    { "date": "2026-08-20", "count": 0 },
+                    { "date": "2026-08-21", "count": 0 },
+                    { "date": "2026-08-22", "count": 0 },
+                    { "date": "2026-08-23", "count": 0 },
+                    { "date": "2026-08-24", "count": 2 },
+                    { "date": "2026-08-25", "count": 3 }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/stats/admin": {
+      "get": {
+        "tags": ["Stats"],
+        "summary": "Platform-wide dashboard statistics",
+        "description": "Admin only. Total users/files/storage, top 5 most-uploaded MIME types, and the 10 most recent uploads with uploader identity.",
+        "operationId": "getAdminStats",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Platform aggregates",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AdminStats" },
+                "example": {
+                  "totals": { "users": 4, "files": 11, "storageBytes": 6850 },
+                  "mostUploadedTypes": [
+                    { "mimeType": "text/plain", "count": 8, "storageBytes": 850 },
+                    { "mimeType": "image/png", "count": 2, "storageBytes": 2000 },
+                    { "mimeType": "application/pdf", "count": 1, "storageBytes": 4000 }
+                  ],
+                  "recentUploads": [
+                    {
+                      "id": "3f1d2a94-6b7e-4f0a-9d21-8c4b91aa77e1",
+                      "filename": "quarterly-report.pdf",
+                      "mimeType": "application/pdf",
+                      "size": 48213,
+                      "createdAt": "2026-08-25T09:12:45.120Z",
+                      "uploader": {
+                        "id": "9b8c1be2-07ba-4075-8c07-82e49ac505ea",
+                        "name": "Jane Tester",
+                        "email": "jane@example.com"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Caller is not an ADMIN",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "FORBIDDEN", "message": "Insufficient permissions" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List users",
+        "description": "Admin only. Search matches name OR email (case-insensitive); filter by role, verification status, creation-date range; sort whitelist: createdAt, updatedAt, name, email. Password is stripped from every payload.",
+        "operationId": "listUsers",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 }, "example": 1 },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }, "example": 10 },
+          { "name": "search", "in": "query", "schema": { "type": "string", "minLength": 1, "maxLength": 255 }, "description": "Matches name or email (case-insensitive)", "example": "alicia" },
+          { "name": "role", "in": "query", "schema": { "type": "string", "enum": ["USER", "ADMIN"] }, "example": "ADMIN" },
+          { "name": "isVerified", "in": "query", "schema": { "type": "string", "enum": ["true", "false"] }, "example": "true" },
+          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt >= from", "example": "2026-08-01T00:00:00.000Z" },
+          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "createdAt <= to", "example": "2026-08-31T23:59:59.000Z" },
+          { "name": "sortBy", "in": "query", "schema": { "type": "string", "enum": ["createdAt", "updatedAt", "name", "email"], "default": "createdAt" }, "example": "name" },
+          { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" }, "example": "asc" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated users",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UsersListResult" },
+                "example": {
+                  "data": [
+                    {
+                      "id": "7c2e9a41-53fd-4b18-92c6-1de4f0a83bb2",
+                      "name": "Alicia B",
+                      "email": "alicia-b@suite.dev",
+                      "role": "USER",
+                      "isVerified": true,
+                      "createdAt": "2026-08-25T00:16:54.100Z",
+                      "updatedAt": "2026-08-25T00:16:54.100Z"
+                    }
+                  ],
+                  "pagination": { "page": 1, "limit": 10, "total": 1, "totalPages": 1 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameter",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": {
+                  "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid request payload",
+                    "details": [{ "path": "isVerified", "message": "Invalid enum value. Expected 'true' | 'false'" }]
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/users/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "example": "7c2e9a41-53fd-4b18-92c6-1de4f0a83bb2" }
+      ],
+      "patch": {
+        "tags": ["Users"],
+        "summary": "Update a user",
+        "description": "Admin only. At least one of `name`, `role`, `isVerified` must be provided. Guards: admins cannot change their own role; demoting the last remaining ADMIN returns 409.",
+        "operationId": "updateUser",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateUserInput" },
+              "example": { "role": "ADMIN" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserMutationResponse" },
+                "example": {
+                  "message": "User updated successfully",
+                  "user": {
+                    "id": "7c2e9a41-53fd-4b18-92c6-1de4f0a83bb2",
+                    "name": "Alicia B",
+                    "email": "alicia-b@suite.dev",
+                    "role": "ADMIN",
+                    "isVerified": true,
+                    "createdAt": "2026-08-25T00:16:54.100Z",
+                    "updatedAt": "2026-08-25T00:18:12.480Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (empty body, bad values)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": {
+                  "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid request payload",
+                    "details": [{ "path": "", "message": "At least one field (name, role, isVerified) is required" }]
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Changing your own role is forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "FORBIDDEN", "message": "You cannot change your own role" } }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user id",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "NOT_FOUND", "message": "User not found" } }
+              }
+            }
+          },
+          "409": {
+            "description": "Demotion would leave zero admins",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "CONFLICT", "message": "Cannot demote the last remaining admin" } }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Users"],
+        "summary": "Delete a user",
+        "description": "Admin only. Cascades the user's files and verification codes; owned Cloudinary assets are destroyed best-effort. Guards: cannot delete yourself; cannot delete the last remaining ADMIN.",
+        "operationId": "deleteUser",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageOnly" },
+                "example": { "message": "User deleted successfully" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Self-deletion forbidden (or non-admin caller)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "FORBIDDEN", "message": "You cannot delete your own account" } }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user id",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "NOT_FOUND", "message": "User not found" } }
+              }
+            }
+          },
+          "409": {
+            "description": "Deletion would leave zero admins",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+                "example": { "error": { "code": "CONFLICT", "message": "Cannot delete the last remaining admin" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access token returned by POST /auth/login. Payload: { userId, role }."
+      }
+    },
+    "schemas": {
+      "HealthStatus": {
+        "type": "object",
+        "properties": { "status": { "type": "string", "enum": ["ok"] } },
+        "required": ["status"]
+      },
+      "Role": { "type": "string", "enum": ["USER", "ADMIN"] },
+      "ExtractionStatus": { "type": "string", "enum": ["PENDING", "PROCESSING", "COMPLETED", "FAILED"] },
+      "MimeDetectionMethod": { "type": "string", "enum": ["magic-bytes", "ole2-signature", "text-sniffing"], "description": "How the stored mimeType was derived (audit trail)." },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "email": { "type": "string", "format": "email" },
+          "role": { "$ref": "#/components/schemas/Role" },
+          "isVerified": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "email", "role", "isVerified", "createdAt", "updatedAt"]
+      },
+      "RegisterInput": {
+        "type": "object",
+        "required": ["name", "email", "password"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "minLength": 8, "maxLength": 72, "description": "bcrypt-hashed server-side; never returned." }
+        }
+      },
+      "LoginInput": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "minLength": 1 }
+        }
+      },
+      "VerifyEmailInput": {
+        "type": "object",
+        "required": ["email", "code"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "code": { "type": "string", "pattern": "^\\d{6}$", "description": "6-digit numeric code, 10-minute validity." }
+        }
+      },
+      "EmailInput": {
+        "type": "object",
+        "required": ["email"],
+        "properties": { "email": { "type": "string", "format": "email" } }
+      },
+      "ResetPasswordInput": {
+        "type": "object",
+        "required": ["email", "code", "newPassword"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "code": { "type": "string", "pattern": "^\\d{6}$" },
+          "newPassword": { "type": "string", "minLength": 8, "maxLength": 72 }
+        }
+      },
+      "ChangePasswordInput": {
+        "type": "object",
+        "required": ["currentPassword", "newPassword"],
+        "properties": {
+          "currentPassword": { "type": "string", "minLength": 1 },
+          "newPassword": { "type": "string", "minLength": 8, "maxLength": 72 }
+        }
+      },
+      "RenameInput": {
+        "type": "object",
+        "required": ["filename"],
+        "properties": { "filename": { "type": "string", "minLength": 1, "maxLength": 255 } }
+      },
+      "UpdateUserInput": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "role": { "$ref": "#/components/schemas/Role" },
+          "isVerified": { "type": "boolean" }
+        }
+      },
+      "MessageOnly": {
+        "type": "object",
+        "properties": { "message": { "type": "string" } },
+        "required": ["message"]
+      },
+      "UserResponse": {
+        "type": "object",
+        "properties": { "user": { "$ref": "#/components/schemas/User" } },
+        "required": ["user"]
+      },
+      "AuthUserResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "user": { "$ref": "#/components/schemas/User" }
+        },
+        "required": ["message", "user"]
+      },
+      "RegisterResponse": {
+        "allOf": [{ "$ref": "#/components/schemas/AuthUserResponse" }]
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "user": { "$ref": "#/components/schemas/User" },
+          "token": { "type": "string", "description": "JWT access token; send as Authorization: Bearer <token>." }
+        },
+        "required": ["message", "user", "token"]
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "minimum": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "total": { "type": "integer" },
+          "totalPages": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["page", "limit", "total", "totalPages"]
+      },
+      "FileTypeStat": {
+        "type": "object",
+        "properties": {
+          "mimeType": { "type": "string" },
+          "count": { "type": "integer", "minimum": 0 },
+          "storageBytes": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["mimeType", "count", "storageBytes"]
+      },
+      "UploadHistoryEntry": {
+        "type": "object",
+        "properties": {
+          "date": { "type": "string", "format": "date", "description": "UTC calendar day" },
+          "count": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["date", "count"]
+      },
+      "UserStats": {
+        "type": "object",
+        "properties": {
+          "totals": {
+            "type": "object",
+            "properties": {
+              "files": { "type": "integer", "minimum": 0 },
+              "storageBytes": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["files", "storageBytes"]
+          },
+          "fileTypes": { "type": "array", "items": { "$ref": "#/components/schemas/FileTypeStat" } },
+          "uploadHistory": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/UploadHistoryEntry" },
+            "description": "Exactly 14 entries (last 14 UTC days), zero-filled."
+          }
+        },
+        "required": ["totals", "fileTypes", "uploadHistory"]
+      },
+      "AdminStats": {
+        "type": "object",
+        "properties": {
+          "totals": {
+            "type": "object",
+            "properties": {
+              "users": { "type": "integer", "minimum": 0 },
+              "files": { "type": "integer", "minimum": 0 },
+              "storageBytes": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["users", "files", "storageBytes"]
+          },
+          "mostUploadedTypes": {
+            "type": "array",
+            "maxItems": 5,
+            "items": { "$ref": "#/components/schemas/FileTypeStat" },
+            "description": "Top 5 MIME types ordered by upload count desc."
+          },
+          "recentUploads": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "format": "uuid" },
+                "filename": { "type": "string" },
+                "mimeType": { "type": "string" },
+                "size": { "type": "integer" },
+                "createdAt": { "type": "string", "format": "date-time" },
+                "uploader": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string", "format": "uuid" },
+                    "name": { "type": "string" },
+                    "email": { "type": "string", "format": "email" }
+                  },
+                  "required": ["id", "name", "email"]
+                }
+              },
+              "required": ["id", "filename", "mimeType", "size", "createdAt", "uploader"]
+            }
+          }
+        },
+        "required": ["totals", "mostUploadedTypes", "recentUploads"]
+      },
+      "File": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "filename": { "type": "string", "maxLength": 255 },
+          "mimeType": { "type": "string", "description": "Derived from content (magic bytes / OLE2 signature / text sniffing) — never trusted from the client." },
+          "size": { "type": "integer", "description": "Bytes, derived server-side from the received buffer." },
+          "url": { "type": "string", "format": "uri", "description": "Cloudinary secure URL." },
+          "storageKey": { "type": "string", "description": "Cloudinary public_id." },
+          "extractedContent": { "type": "string", "nullable": true, "description": "Extracted text (≤100k chars); null when nothing extractable or extraction failed." },
+          "extractedMetadata": {
+            "type": "object",
+            "nullable": true,
+            "description": "Extractor-specific metadata plus mimeDetectionMethod audit field.",
+            "properties": {
+              "mimeDetectionMethod": { "$ref": "#/components/schemas/MimeDetectionMethod" }
+            },
+            "additionalProperties": true
+          },
+          "extractionStatus": { "$ref": "#/components/schemas/ExtractionStatus" },
+          "uploadedById": { "type": "string", "format": "uuid" },
+          "uploadedBy": { "$ref": "#/components/schemas/User", "description": "Owner of the file (populated via relation)." },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "filename", "mimeType", "size", "url", "storageKey", "extractedContent", "extractedMetadata", "extractionStatus", "uploadedById", "createdAt", "updatedAt"]
+      },
+      "FileResponse": {
+        "type": "object",
+        "properties": { "file": { "$ref": "#/components/schemas/File" } },
+        "required": ["file"]
+      },
+      "FileMutationResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "file": { "$ref": "#/components/schemas/File" }
+        },
+        "required": ["message", "file"]
+      },
+      "UploadSummary": {
+        "type": "object",
+        "properties": {
+          "total": { "type": "integer", "minimum": 1, "maximum": 10 },
+          "uploaded": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["total", "uploaded", "failed"]
+      },
+      "FileUploadSuccessEntry": {
+        "type": "object",
+        "properties": {
+          "filename": { "type": "string" },
+          "success": { "type": "boolean", "enum": [true] },
+          "file": { "$ref": "#/components/schemas/File" }
+        },
+        "required": ["filename", "success", "file"]
+      },
+      "FileUploadFailedEntry": {
+        "type": "object",
+        "properties": {
+          "filename": { "type": "string" },
+          "success": { "type": "boolean", "enum": [false] },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["code", "message"]
+          }
+        },
+        "required": ["filename", "success", "error"]
+      },
+      "FileUploadResultEntry": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/FileUploadSuccessEntry" },
+          { "$ref": "#/components/schemas/FileUploadFailedEntry" }
+        ]
+      },
+      "UploadBatchResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "summary": { "$ref": "#/components/schemas/UploadSummary" },
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/FileUploadResultEntry" } }
+        },
+        "required": ["message", "summary", "results"]
+      },
+      "FileListResult": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/File" } },
+          "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+        },
+        "required": ["data", "pagination"]
+      },
+      "UsersListResult": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
+          "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+        },
+        "required": ["data", "pagination"]
+      },
+      "UserMutationResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "user": { "$ref": "#/components/schemas/User" }
+        },
+        "required": ["message", "user"]
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "required": ["path", "message"]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": ["VALIDATION_ERROR", "UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND", "CONFLICT", "FILE_TOO_LARGE", "MULTIPART_ERROR", "UPLOAD_FAILED", "EMAIL_SEND_FAILED", "INTERNAL_SERVER_ERROR"]
+              },
+              "message": { "type": "string" },
+              "details": {
+                "type": "array",
+                "nullable": true,
+                "items": { "$ref": "#/components/schemas/ErrorDetail" },
+                "description": "Present only for zod validation failures."
+              }
+            },
+            "required": ["code", "message"]
+          }
+        },
+        "required": ["error"]
+      }
+    },
+    "responses": {
+      "ValidationError": {
+        "description": "Request body failed validation",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "example": {
+              "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "Invalid request payload",
+                "details": [
+                  { "path": "name", "message": "Name is required" },
+                  { "path": "email", "message": "Must be a valid email address" },
+                  { "path": "password", "message": "Password must be at least 8 characters" }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid, or expired bearer token",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "example": { "error": { "code": "UNAUTHORIZED", "message": "Authentication required" } }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but insufficient role",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "example": { "error": { "code": "FORBIDDEN", "message": "Insufficient permissions" } }
+          }
+        }
+      },
+      "FileNotFound": {
+        "description": "File missing or owned by someone else (indistinguishable 404)",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "example": { "error": { "code": "NOT_FOUND", "message": "File not found" } }
+          }
+        }
+      }
+    }
+  }
+}

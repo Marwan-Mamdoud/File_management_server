@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ExtractionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum OtpPurpose {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+}
+
+model User {
+  id         String   @id @default(uuid())
+  name       String
+  email      String   @unique
+  password   String
+  role       Role     @default(USER)
+  isVerified Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  files         File[]
+  verifications VerificationCode[]
+}
+
+model VerificationCode {
+  id        String     @id @default(uuid())
+  codeHash  String
+  purpose   OtpPurpose
+  expiresAt DateTime
+  consumed  Boolean    @default(false)
+  createdAt DateTime   @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+}
+
+model File {
+  id               String           @id @default(uuid())
+  filename         String
+  mimeType         String
+  size             Int
+
+  url              String
+  storageKey       String
+
+  extractedContent String?          @db.Text
+  extractedMetadata Json?
+  extractionStatus ExtractionStatus @default(PENDING)
+
+  uploadedById     String
+  uploadedBy       User             @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([uploadedById])
+  @@index([mimeType])
+  @@index([createdAt])
+}
